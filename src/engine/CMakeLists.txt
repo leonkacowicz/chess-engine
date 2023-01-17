@@ -1,0 +1,11 @@
+file(GLOB SRCS *.cpp *.h)
+file(GLOB MAINCPP main.cpp)
+list(REMOVE_ITEM SRCS ${MAINCPP})
+add_library(engine STATIC ${SRCS})
+target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(engine libchess-core)
+target_link_libraries(engine libchess-uci)
+target_link_libraries(engine Threads::Threads)
+
+add_executable(chessengine main.cpp)
+target_link_libraries(chessengine engine)
