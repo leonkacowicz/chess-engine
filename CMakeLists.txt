@@ -1,4 +1,3 @@
-# https://youyue123.github.io/tech/2018/01/29/TDD-for-C++-in-CMake-And-GoogleTest.html
 cmake_minimum_required(VERSION 3.5)
 project(chess-engine)
 
