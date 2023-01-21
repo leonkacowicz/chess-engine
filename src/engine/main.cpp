@@ -75,9 +75,13 @@ int main()
         auto words = split(input);
 
         if (words[0] == "uci") {
+            std::cout << "id name chess-engine-name-tbd" << std::endl;
+            std::cout << "id author Leon Kacowicz" << std::endl;
             std::cout << "uciok" << std::endl;
             std::cout.flush();
             continue;
+        } else if (words[0] == "quit") {
+            break;
         } else if (words[0] == "isready") {
             std::cout << "readyok" << std::endl;
             std::cout.flush();
