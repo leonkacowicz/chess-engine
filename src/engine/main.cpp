@@ -6,6 +6,7 @@
 #include <chess/core.h>
 #include <chess/move_gen.h>
 #include <chess/game.h>
+#include <chess/fen.h>
 #include <chess/uci/uci.h>
 #include <chess/engine/engine.h>
 #include <chess/engine/static_evaluator.h>
@@ -29,35 +30,43 @@ std::vector<string> split(const string& input, const string& delimiter = " ") {
     return ret;
 }
 
-void print_illegal_start_sequence_message(const std::vector<string>& words, int pos) {
+void print_illegal_start_sequence_message(const std::vector<string>& moves, int pos) {
     std::cerr << "ERROR: Illegal move sequence from startpos:";
-    for (int i = 2; i <= pos; i++) {
-        std::cerr << " " << words[i];
+    for (int i = 0; i <= pos; i++) {
+        std::cerr << " " << moves[i];
     }
     std::cerr << std::endl;
 }
 
-game handle_position_cmd(const std::vector<string>& words) {
-    assert(words[0] == "position");
-    if (words[1] == "startpos") {
-        board b;
-        b.set_initial_position();
-        game g(b);
-        auto iter = std::find(words.begin(), words.end(), "moves");
-        if (iter == words.end()) return g;
-        while (++iter != words.end()) {
-            auto moves = move_gen(g.states.back().b).generate();
-            auto move_found = std::find_if(moves.begin(), moves.end(), [&] (const move& m) {
-                return to_long_move(m) == *iter;
-            });
-            if (move_found != moves.end()) {
-                g.do_move(*move_found);
-            } else {
-                print_illegal_start_sequence_message(words, iter - words.begin() + 1);
+bool do_long_move(game& g, const string& long_move) {
+    auto moves = move_gen(g.states.back().b).generate();
+    for (const auto& m : moves) {
+        if (to_long_move(m) == long_move) {
+            g.do_move(m);
+            return true;
+        }
+    }
+    return false;
+}
+
+game handle_position_cmd(const std::vector<string>& tokens) {
+    assert(tokens[0] == "position");
+    chess::uci::cmd_position position = chess::uci::parse_cmd_position(tokens);
+    if (position.initial_position == "startpos") {
+        game g;
+        int move_count = 0;
+        for (int i = 0; i < position.moves.size(); i++) {
+            move_count++;
+            if (!do_long_move(g, position.moves[i])) {
+                print_illegal_start_sequence_message(tokens, i);
                 return g;
             }
         }
         return g;
+    }
+    if (tokens[1] == "fen") {
+        board b = chess::core::fen::board_from_fen(position.initial_position);
+        return game(b);
     }
     throw std::runtime_error("position type not implemented");
 }
@@ -87,9 +96,7 @@ int main()
             std::cout.flush();
             continue;
         } else if (words[0] == "position") {
-            if (words[1] == "startpos") {
-                g = handle_position_cmd(words);
-            }
+            g = handle_position_cmd(words);
             continue;
         } else if (words[0] == "go") {
             chess::uci::cmd_go cmd(words);
