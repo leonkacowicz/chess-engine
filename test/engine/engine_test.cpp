@@ -191,6 +191,16 @@ TEST(engine_test, static_eval_should_be_simmetric) {
     ASSERT_EQ(e.eval(b), -e.eval(b.flip_colors()));
 }
 
+// The symmetry test passes even if the piece-square tables are vertically
+// flipped (both colours flip together), so pin the orientation directly: a
+// centralized white knight must score higher than a cornered one.
+TEST(engine_test, eval_pst_orientation) {
+    static_evaluator e;
+    int central = e.eval(fen::board_from_fen("4k3/8/8/8/3N4/8/8/4K3 w - -"));
+    int corner  = e.eval(fen::board_from_fen("4k3/8/8/8/8/8/8/N3K3 w - -"));
+    ASSERT_GT(central, corner) << "central=" << central << " corner=" << corner;
+}
+
 // LMR reduces quiet moves; this is a quiet (non-capturing) knight move that
 // delivers a smothered mate in one. It guards against over-reducing a quiet
 // mating move into invisibility.
