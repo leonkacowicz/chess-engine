@@ -9,6 +9,7 @@
 #include <chess/move.h>
 #include <chess/board.h>
 #include <unordered_map>
+#include <atomic>
 #include <chrono>
 #include <chess/game.h>
 #include <chess/zobrist.h>
@@ -35,7 +36,7 @@ class engine {
 
     bool no_more_time();
 public:
-    bool time_over = false;
+    std::atomic<bool> time_over{false};
     move bestmove;
     int max_depth;
 

@@ -47,6 +47,7 @@ std::pair<move, int> engine::search_iterate(game& g) {
     int val = search_root(g, current_depth, -INF, +INF);
 
     for (current_depth = 2; current_depth <= max_depth; current_depth++) {
+        if (time_over) break;
         if (val > MATE - current_depth) break;
         val = search_widen(g, current_depth, val);
     }
@@ -120,9 +121,8 @@ int engine::search_root(game& g, int depth, int alpha, int beta) {
 template<bool is_pv>
 int engine::search(game& g, int depth, int ply, int alpha, int beta) {
     if (no_more_time()) return 0;
-    auto state = g.states.back();
-    auto b = state.b;
-    uint64_t hash = state.hash;
+    board b = g.states.back().b;
+    uint64_t hash = g.states.back().hash;
     int mate_value = MATE - ply;
 
     if (alpha < -mate_value) alpha = -mate_value;
@@ -186,7 +186,12 @@ int engine::search(game& g, int depth, int ply, int alpha, int beta) {
     }
 
 
-    if (!is_pv && !in_check && depth > 2 && can_do_null_move && eval.eval(b) * (b.side_to_play == BLACK ? -1 : 1) >= beta) {
+    // Null-move pruning is unsound in zugzwang: if the side to move has only
+    // pawns left, "passing" can be strictly better than any legal move, so the
+    // null search returns a bound that doesn't hold. Require non-pawn material.
+    const bitboard us_non_pawn = b.piece_of_color[b.side_to_play]
+        & (b.piece_of_type[KNIGHT] | b.piece_of_type[BISHOP] | b.piece_of_type[ROOK] | b.piece_of_type[QUEEN]);
+    if (!is_pv && !in_check && depth > 2 && can_do_null_move && us_non_pawn && eval.eval(b) * (b.side_to_play == BLACK ? -1 : 1) >= beta) {
         g.do_null_move();
         can_do_null_move = false;
         int nmval;
@@ -264,20 +269,23 @@ std::vector<std::pair<move, int>> engine::get_move_scores(const board& b, int pl
     ret.reserve(moves_end - move_buffer);
     for (move* mp = move_buffer; mp != moves_end; ++mp) {
         const move m = *mp;
-        int score = history[b.side_to_play][move_origin(m)][move_dest(m)];
+        const square org = move_origin(m);
+        const square dst = move_dest(m);
+        int score = history[b.side_to_play][org][dst];
         board bnew = b;
         bnew.make_move(m);
         if (m == tt_move) score += 1'000'000'000;
         if (bnew.under_check(bnew.side_to_play)) score += 400'000'000;
-        piece captured = b.piece_at(get_bb(move_dest(m)));
-        if (captured != NO_PIECE || (b.piece_at(get_bb(move_origin(m))) == PAWN && move_dest(m) == b.en_passant)) {
+        const piece mover = b.piece_at(get_bb(org));
+        const piece captured = b.piece_at(get_bb(dst));
+        if (captured != NO_PIECE || (mover == PAWN && dst == b.en_passant)) {
             score += 100000100;
             if (captured == QUEEN) score += 800;
             else if (captured == ROOK) score += 400;
             else if (captured == BISHOP) score += 235;
             else if (captured == KNIGHT) score += 225;
         }
-        if (b.piece_at(get_bb(move_origin(m))) == PAWN && (get_rank(move_dest(m)) % 8) == 0) score += 90'000'000;
+        if (mover == PAWN && (get_rank(dst) % 8) == 0) score += 90'000'000;
         if (killers.size() > ply) {
             if (killers[ply].first == m) score += 80'000'000;
             if (killers[ply].second == m) score += 79'999'999;
@@ -330,26 +338,25 @@ int engine::qsearch(game& g, int ply, int alpha, int beta) {
     uint64_t hash = g.states.back().hash;
     tt_node node;
     move tt_move = null_move;
-    int val;
+    // Probe the TT for the hash move and for a real bound cutoff from entries
+    // the main search wrote. We deliberately do NOT write per-node qsearch
+    // results back: they would be depth-0 entries that evict the main search's
+    // valuable deep entries under the naive replacement scheme. (Previously
+    // qsearch stored the raw static eval as EXACT and returned it on a hit,
+    // which could return a non-quiescent value that ignores captures.)
     if (tt.load(hash, 0, &node)) {
-        val = node.value;
         tt_move = node.bestmove;
-        if (node.type == EXACT) {
-            if (alpha < val && val < beta) {
-                if (std::abs(val) > MATE - 100) {
-                    if (val > 0) val = val - ply;
-                    else val = val + ply;
-                }
-                return val;
-            }
-        }
-    } else {
-        val = eval.eval(b);
-        if (b.side_to_play == BLACK) val = -val;
-        tt.save(hash, 0, val, EXACT, tt_move);
+        int val = node.value;
+        if (std::abs(val) > MATE - 100) val = val > 0 ? val - ply : val + ply;
+        if (node.type == EXACT) return val;
+        if (node.type == ALPHA && val <= alpha) return val;
+        if (node.type == BETA && val >= beta) return val;
     }
-    if (val >= beta) return val;
-    if (val > alpha) alpha = val;
+
+    int stand_pat = eval.eval(b);
+    if (b.side_to_play == BLACK) stand_pat = -stand_pat;
+    if (stand_pat >= beta) return stand_pat;
+    if (stand_pat > alpha) alpha = stand_pat;
 
     if (g.is_draw_by_insufficient_material()) {
         tt.save(hash, INF, 0, EXACT, null_move);
@@ -357,32 +364,29 @@ int engine::qsearch(game& g, int ply, int alpha, int beta) {
     }
     auto legal_moves = get_move_scores(b, ply, tt_move);
     if (legal_moves.empty()) {
-        val = 0;
         if (b.under_check(b.side_to_play)) {
-            val = -MATE + ply;
             tt.save(hash, INF, -MATE, EXACT, null_move);
-        } else {
-            tt.save(hash, INF, 0, EXACT, null_move);
+            return -MATE + ply;
         }
-        return val;
+        tt.save(hash, INF, 0, EXACT, null_move);
+        return 0;
     }
 
+    int best = stand_pat;
     for (int i = 0; i < legal_moves.size(); i++) {
         sort_moves(legal_moves, i);
         move m = legal_moves[i].first;
-        //auto bnew = g.states.back().b;
         if (b.piece_at(get_bb(move_dest(m))) != NO_PIECE || move_type(m) >= PROMOTION_QUEEN || (move_dest(m) == b.en_passant && b.piece_at(get_bb(move_origin(m))) == PAWN)) {
             g.do_move(m);
             auto _ = auto_undo_last_move(g);
-            val = -qsearch(g, ply + 1, -beta, -alpha);
+            int val = -qsearch(g, ply + 1, -beta, -alpha);
             if (no_more_time()) return 0;
-            if (val > alpha) {
-                if (val >= beta) return val;
-                alpha = val;
-            }
+            if (val > best) best = val;
+            if (val > alpha) alpha = val;
+            if (val >= beta) break;
         }
     }
-    return alpha;
+    return best;
 }
 
 void engine::log_score(const board& b, int val) {
@@ -424,15 +428,13 @@ void engine::log_score(const board& b, int val) {
 }
 
 move engine::timed_search(game& g, const std::chrono::milliseconds& time) {
-    using namespace std::chrono_literals;
+    // Runs synchronously. The UCI driver runs this on its own thread so the
+    // input loop stays responsive and `stop` can flip time_over to abort us.
     time_over = false;
     bestmove = null_move;
     max_time = time;
-    std::future<void> fut = std::async(std::launch::async, [&] () {
-        search_iterate(g);
-        if (!time_over) std::cout << "bestmove " << to_long_move(bestmove) << std::endl;
-    });
-    fut.get();
+    search_iterate(g);
+    std::cout << "bestmove " << to_long_move(bestmove) << std::endl;
     return bestmove;
 }
 
@@ -440,8 +442,7 @@ bool engine::no_more_time() {
     if (time_over) return true;
     if (max_time.count() == 0) return false;
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - initial_search_time);
-    time_over = elapsed >= max_time;
-    if (time_over) std::cout << "bestmove " << to_long_move(bestmove) << std::endl;
+    if (elapsed >= max_time) time_over = true;
     return time_over;
 }
 

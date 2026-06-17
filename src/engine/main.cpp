@@ -3,6 +3,7 @@
 #include <memory>
 #include <algorithm>
 #include <fstream>
+#include <thread>
 #include <chess/core.h>
 #include <chess/move_gen.h>
 #include <chess/game.h>
@@ -79,6 +80,8 @@ int main()
     board b;
     b.set_initial_position();
     game g(b);
+    std::thread search_thread;
+    auto join_search = [&search_thread]() { if (search_thread.joinable()) search_thread.join(); };
     string input;
     while (std::getline(std::cin, input)) {
         auto words = split(input);
@@ -90,17 +93,22 @@ int main()
             std::cout.flush();
             continue;
         } else if (words[0] == "quit") {
+            eng->time_over = true;   // abort any running search
+            join_search();
             break;
         } else if (words[0] == "isready") {
+            // Must stay responsive while a search is running, so do not join.
             std::cout << "readyok" << std::endl;
             std::cout.flush();
             continue;
         } else if (words[0] == "position") {
+            join_search();   // don't reassign g while the search thread reads it
             g = handle_position_cmd(words);
             continue;
         } else if (words[0] == "go") {
             chess::uci::cmd_go cmd(words);
             //uci_go_cmd cmd(words);
+            join_search();   // ensure no previous search is still running
             if (move_gen(g.states.back().b).generate().empty()) {
                 std::cerr << "no legal move found to be searched" << std::endl;
                 std::cout << "bestmove (none)" << std::endl;
@@ -108,15 +116,20 @@ int main()
                 std::cout << "info calculating move for " << cmd.move_time.count() << "ms\n";
                 if (cmd.max_depth > 0) eng->max_depth = cmd.max_depth;
                 else eng->max_depth = 30;
-                eng->timed_search(g, cmd.move_time);
+                // Run the search on its own thread so the input loop keeps
+                // reading; `stop` flips time_over to abort it.
+                engine* ep = eng.get();
+                auto move_time = cmd.move_time;
+                search_thread = std::thread([ep, &g, move_time]() { ep->timed_search(g, move_time); });
             }
         } else if (words[0] == "print") {
             b.print();
         }
         else if (words[0] == "stop") {
             eng->time_over = true;
-            std::cout << "bestmove " << to_long_move(eng->bestmove) << std::endl;
+            join_search();   // the search thread prints bestmove as it unwinds
         }
     }
+    join_search();
     return 0;
 }
