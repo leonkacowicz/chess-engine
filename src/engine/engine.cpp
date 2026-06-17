@@ -362,8 +362,14 @@ int engine::qsearch(game& g, int ply, int alpha, int beta) {
         tt.save(hash, INF, 0, EXACT, null_move);
         return 0;
     }
-    auto legal_moves = get_move_scores(b, ply, tt_move);
-    if (legal_moves.empty()) {
+    // Generate all legal moves (needed to detect checkmate/stalemate via an
+    // empty list), but score ONLY the captures/promotions/en-passant that
+    // qsearch will actually search. This avoids the per-move board copy +
+    // make_move + under_check that get_move_scores pays for every quiet move
+    // qsearch would otherwise skip.
+    move move_buffer[220];
+    move* moves_end = move_gen(b).generate_into(move_buffer);
+    if (moves_end == move_buffer) {
         if (b.under_check(b.side_to_play)) {
             tt.save(hash, INF, -MATE, EXACT, null_move);
             return -MATE + ply;
@@ -372,19 +378,38 @@ int engine::qsearch(game& g, int ply, int alpha, int beta) {
         return 0;
     }
 
-    int best = stand_pat;
-    for (int i = 0; i < legal_moves.size(); i++) {
-        sort_moves(legal_moves, i);
-        move m = legal_moves[i].first;
-        if (b.piece_at(get_bb(move_dest(m))) != NO_PIECE || move_type(m) >= PROMOTION_QUEEN || (move_dest(m) == b.en_passant && b.piece_at(get_bb(move_origin(m))) == PAWN)) {
-            g.do_move(m);
-            auto _ = auto_undo_last_move(g);
-            int val = -qsearch(g, ply + 1, -beta, -alpha);
-            if (no_more_time()) return 0;
-            if (val > best) best = val;
-            if (val > alpha) alpha = val;
-            if (val >= beta) break;
+    std::vector<std::pair<move, int>> captures;
+    captures.reserve(moves_end - move_buffer);
+    for (move* mp = move_buffer; mp != moves_end; ++mp) {
+        const move m = *mp;
+        const square dst = move_dest(m);
+        const piece captured = b.piece_at(get_bb(dst));
+        const bool promo = move_type(m) >= PROMOTION_QUEEN;
+        const bool ep = (dst == b.en_passant && b.piece_at(get_bb(move_origin(m))) == PAWN);
+        if (captured == NO_PIECE && !promo && !ep) continue;   // skip quiets
+        int score = (m == tt_move) ? 1'000'000'000 : 0;
+        if (captured != NO_PIECE || ep) {
+            score += 100000100;
+            if (captured == QUEEN) score += 800;
+            else if (captured == ROOK) score += 400;
+            else if (captured == BISHOP) score += 235;
+            else if (captured == KNIGHT) score += 225;
         }
+        if (promo) score += 90'000'000;
+        captures.emplace_back(m, score);
+    }
+
+    int best = stand_pat;
+    for (int i = 0; i < captures.size(); i++) {
+        sort_moves(captures, i);
+        move m = captures[i].first;
+        g.do_move(m);
+        auto _ = auto_undo_last_move(g);
+        int val = -qsearch(g, ply + 1, -beta, -alpha);
+        if (no_more_time()) return 0;
+        if (val > best) best = val;
+        if (val > alpha) alpha = val;
+        if (val >= beta) break;
     }
     return best;
 }
