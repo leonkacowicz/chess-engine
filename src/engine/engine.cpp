@@ -71,7 +71,7 @@ int engine::search_root(game& g, int depth, int alpha, int beta) {
         if (node.bestmove != null_move)
             current_bestmove = node.bestmove;
     }
-    auto legal_moves = get_move_scores(b, 0, move_gen(b).generate(), current_bestmove);
+    auto legal_moves = get_move_scores(b, 0, current_bestmove);
     int val;
     int best = -1;
     int bestval = -INF;
@@ -161,7 +161,7 @@ int engine::search(game& g, int depth, int ply, int alpha, int beta) {
 
     nodes++;
 
-    auto legal_moves = get_move_scores(b, ply, move_gen(b).generate(), tt_move);
+    auto legal_moves = get_move_scores(b, ply, tt_move);
     if (legal_moves.empty()) {
         val = 0;
         if (in_check) {
@@ -257,9 +257,13 @@ int engine::search(game& g, int depth, int ply, int alpha, int beta) {
     return alpha;
 }
 
-std::vector<std::pair<move, int>> engine::get_move_scores(const board& b, int ply, const std::vector<move>& moves, const move tt_move) {
+std::vector<std::pair<move, int>> engine::get_move_scores(const board& b, int ply, const move tt_move) {
+    move move_buffer[220];
+    move* moves_end = move_gen(b).generate_into(move_buffer);
     std::vector<std::pair<move, int>> ret;
-    for (auto m : moves) {
+    ret.reserve(moves_end - move_buffer);
+    for (move* mp = move_buffer; mp != moves_end; ++mp) {
+        const move m = *mp;
         int score = history[b.side_to_play][move_origin(m)][move_dest(m)];
         board bnew = b;
         bnew.make_move(m);
@@ -351,7 +355,7 @@ int engine::qsearch(game& g, int ply, int alpha, int beta) {
         tt.save(hash, INF, 0, EXACT, null_move);
         return 0;
     }
-    auto legal_moves = get_move_scores(b, ply, move_gen(b).generate(), tt_move);
+    auto legal_moves = get_move_scores(b, ply, tt_move);
     if (legal_moves.empty()) {
         val = 0;
         if (b.under_check(b.side_to_play)) {

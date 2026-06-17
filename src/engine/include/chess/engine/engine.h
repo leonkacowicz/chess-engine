@@ -59,7 +59,7 @@ public:
     int qsearch(game& g, int ply, int alpha, int beta);
 
     std::vector<std::pair<move, int>>
-    get_move_scores(const board& b, int ply, const std::vector<move>& moves, const move tt_move);
+    get_move_scores(const board& b, int ply, const move tt_move);
 
     void sort_moves(std::vector<std::pair<move, int>>& moves, int first);
 };
