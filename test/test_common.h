@@ -1,6 +1,7 @@
 #ifndef CHESSENGINE_TEST_COMMON_H
 #define CHESSENGINE_TEST_COMMON_H
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <random>
 
 #define ASSERT_NOT_CONTAINS(X, Y) ASSERT_EQ(std::find(begin(X), end(X), Y), end(X))
