@@ -82,7 +82,13 @@ TEST(engine_test, engine_should_find_mate_in_8ply) {
     auto g = game(b);
     auto m = e.search_iterate(g);
 
-    ASSERT_EQ(m.first, get_move(SQ_D3, SQ_C5));
+    // This position has TWO equally fast forced mates (verified: both mate in 7
+    // plies) -- the knight maneuver Nd3-c5 and the rook sac Rc4xe4. Different
+    // move ordering (e.g. with vs without LMR) can surface either one, so accept
+    // both, and require that a forced mate was actually found.
+    ASSERT_TRUE(m.first == get_move(SQ_D3, SQ_C5) || m.first == get_move(SQ_C4, SQ_E4))
+        << "unexpected move " << to_long_move(m.first);
+    ASSERT_GT(m.second, MATE - 50);   // a mate score for the side to move
 }
 
 TEST(engine_test, engine_should_find_mate_in_9ply) {
@@ -183,4 +189,33 @@ TEST(engine_test, static_eval_should_be_simmetric) {
     auto b = fen::board_from_fen("kq6/p7/8/7N/8/8/PP6/4K2R w K--- - 0 1");
     static_evaluator e;
     ASSERT_EQ(e.eval(b), -e.eval(b.flip_colors()));
+}
+
+// LMR reduces quiet moves; this is a quiet (non-capturing) knight move that
+// delivers a smothered mate in one. It guards against over-reducing a quiet
+// mating move into invisibility.
+TEST(engine_test, engine_should_find_quiet_knight_mate_in_one) {
+    board b = fen::board_from_fen("6rk/6pp/3N4/8/8/8/8/K7 w - -");
+    static_evaluator eval;
+    engine e(eval);
+    auto g = game(b);
+    auto m = e.search_iterate(g);
+    ASSERT_EQ(m.first, get_move(SQ_D6, SQ_F7));   // Nf7# (king boxed in by g7/h7/Rg8)
+    ASSERT_GT(m.second, MATE - 50);
+}
+
+// LMR makes search order-sensitive; the result must still be deterministic
+// (no order-dependent UB / data race). Two fresh engines on the same position
+// at a fixed depth must agree on both move and score.
+TEST(engine_test, search_is_deterministic) {
+    board b = fen::board_from_fen("r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq -");
+    static_evaluator eval;
+    engine e1(eval, 8);
+    engine e2(eval, 8);
+    game g1(b);
+    game g2(b);
+    auto m1 = e1.search_iterate(g1);
+    auto m2 = e2.search_iterate(g2);
+    ASSERT_EQ(m1.first, m2.first);
+    ASSERT_EQ(m1.second, m2.second);
 }

@@ -214,14 +214,33 @@ int engine::search(game& g, int depth, int ply, int alpha, int beta) {
     for (int i = 0; i < legal_moves.size(); i++) {
         sort_moves(legal_moves, i);
         move m = legal_moves[i].first;
+        const square mdst = move_dest(m);
+        const bool tactical = b.piece_at(get_bb(mdst)) != NO_PIECE
+                              || move_type(m) >= PROMOTION_QUEEN
+                              || (mdst == b.en_passant && b.piece_at(get_bb(move_origin(m))) == PAWN);
+        const bool is_killer = killers.size() > ply && (killers[ply].first == m || killers[ply].second == m);
         g.do_move(m);
         auto _ = auto_undo_last_move(g);
         if (!raised_alpha) {
             val = -search<is_pv>(g, depth - 1, ply + 1, -beta, -alpha);
             if (no_more_time()) return 0;
         } else {
-            int tmp = -search<false>(g, depth - 1, ply + 1, -alpha - 1, -alpha);
+            // Late Move Reductions: search late, quiet, non-checking moves at a
+            // reduced depth. Only re-search at full depth if the reduction is
+            // contradicted (the move beats alpha) -- the safety net that keeps
+            // a too-aggressive reduction from hiding a good move.
+            int R = 0;
+            if (depth >= 3 && i >= 3 && !in_check && !tactical && !is_killer
+                && !g.states.back().b.under_check()) {   // move does not give check
+                R = (i >= 6) ? 2 : 1;
+                if (R > depth - 2) R = depth - 2;         // keep reduced depth >= 1
+            }
+            int tmp = -search<false>(g, depth - 1 - R, ply + 1, -alpha - 1, -alpha);
             if (no_more_time()) return 0;
+            if (R > 0 && tmp > alpha) {   // reduced search surprised us: verify at full depth
+                tmp = -search<false>(g, depth - 1, ply + 1, -alpha - 1, -alpha);
+                if (no_more_time()) return 0;
+            }
             if (tmp > alpha) {
                 val = -search<true>(g, depth - 1, ply + 1, -beta, -alpha);
                 if (no_more_time()) return 0;
