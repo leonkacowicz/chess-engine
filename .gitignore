@@ -4,3 +4,6 @@ cmake-build-*
 runtest
 out
 !CMakeLists.txt
+
+# benchmark game cache (regenerable by selfplay_bench.py)
+bench/game.txt
