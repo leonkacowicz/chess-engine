@@ -22,6 +22,7 @@ std::pair<move, int> engine::search_iterate(game& g) {
 
     time_over = false;
     initial_search_time = std::chrono::steady_clock::now();
+    tt.new_search();   // advance TT generation so stale entries become replaceable
     auto legal_moves = move_gen(g.states.back().b).generate();
     if (legal_moves.empty()) {
         if (g.states.back().b.under_check())
