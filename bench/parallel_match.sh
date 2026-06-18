@@ -13,10 +13,12 @@
 #                        is rewarded -- the right way to judge eval/search changes.
 #   rounds             : repeats of the opening set (timing jitter -> fresh games)
 #   jobs               : concurrent games. Each game is turn-based, so only ONE
-#                        of its two engines searches at a time. Keep jobs well
-#                        under the core count so active searchers <= physical
-#                        cores, otherwise wall-clock timing gets throttled and
-#                        the result is biased (heavier engines lose unfairly).
+#                        of its two engines searches at a time -- but the blocked
+#                        opponents, arbiters and OS also use cores, so the safe
+#                        rule is jobs <= ~cores/3, NOT cores. Measured on a 24-core
+#                        box: jobs=4 matched a fair run, but jobs=16 biased ~3pp
+#                        against the heavier engine (throttled wall-clock). When
+#                        in doubt, lower jobs -- timing fidelity > throughput.
 #
 # Arbiter binary: $ARBITER, else the sibling chess-arbiter build.
 set -u
@@ -24,7 +26,7 @@ A=${1:?usage: parallel_match.sh ENGINE_A ENGINE_B [movetime_ms=100] [rounds=2] [
 B=${2:?need ENGINE_B path}
 MT=${3:-100}
 ROUNDS=${4:-2}
-JOBS=${5:-16}
+JOBS=${5:-8}   # conservative for timing fidelity; raise only if cores are plentiful
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ARB=${ARBITER:-$HERE/../../chess-arbiter/build/src/arbiter/chessarbiter}
