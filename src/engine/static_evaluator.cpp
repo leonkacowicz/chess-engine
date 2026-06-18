@@ -92,6 +92,48 @@ const int KING_EG[64] = {
    -50,-30,-30,-30,-30,-30,-30,-50
 };
 
+// Pawn structure. Doubled and isolated pawns are flat penalties; passed pawns
+// are a bonus that grows with advancement and is weighted toward the endgame
+// (where a passed pawn's promotion threat dominates). Indexed by the pawn's
+// relative rank (how far it has advanced, 0..7; only 1..6 occur).
+const int DOUBLED = 12;
+const int ISOLATED = 14;
+const int PASSED_MG[8] = {0, 0, 5, 10, 20, 35, 60, 0};
+const int PASSED_EG[8] = {0, 0, 10, 20, 40, 70, 120, 0};
+
+void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
+    const bitboard own = b.piece_of_type[PAWN] & b.piece_of_color[c];
+    const bitboard enemy = b.piece_of_type[PAWN] & b.piece_of_color[opposite(c)];
+
+    int flat = 0;   // doubled + isolated, applied equally to mg and eg
+    for (int f = 0; f < 8; f++) {
+        const int cnt = num_squares(own & file[f]);
+        if (cnt >= 2) flat -= (cnt - 1) * DOUBLED;
+        if (cnt > 0) {
+            const bitboard adj = (f > 0 ? file[f - 1] : 0) | (f < 7 ? file[f + 1] : 0);
+            if (!(own & adj)) flat -= cnt * ISOLATED;   // every pawn on this file is isolated
+        }
+    }
+
+    int mg = flat, eg = flat;
+    bitboard p = own;
+    while (p) {
+        const square sq = pop_lsb(&p);
+        const int f = get_file(sq), r = get_rank(sq);
+        const bitboard files = file[f] | (f > 0 ? file[f - 1] : 0) | (f < 7 ? file[f + 1] : 0);
+        bitboard ahead;
+        int rel;
+        if (c == WHITE) { ahead = ~bitboard(0) << (8 * (r + 1)); rel = r; }
+        else            { ahead = (bitboard(1) << (8 * r)) - 1;   rel = 7 - r; }
+        if (!(enemy & files & ahead)) {   // no enemy pawn can stop it -> passed
+            mg += PASSED_MG[rel];
+            eg += PASSED_EG[rel];
+        }
+    }
+    mg_out = mg;
+    eg_out = eg;
+}
+
 }  // namespace
 
 int static_evaluator::eval(const board& b) {
@@ -121,6 +163,13 @@ int static_evaluator::eval(const board& b) {
         const int idx = (c == WHITE) ? (int(b.king_pos[c]) ^ 56) : int(b.king_pos[c]);
         mg[c] += KING_MG[idx];
         eg[c] += KING_EG[idx];
+    }
+
+    for (color c : {WHITE, BLACK}) {
+        int psm, pse;
+        pawn_structure(b, c, psm, pse);
+        mg[c] += psm;
+        eg[c] += pse;
     }
 
     if (phase > PHASE_MAX) phase = PHASE_MAX;   // early promotions can exceed it
