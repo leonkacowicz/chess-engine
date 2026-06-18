@@ -162,6 +162,26 @@ int mobility(const board& b, color c) {
     return m;
 }
 
+// Bishop pair (controls both colour complexes) and rooks on open / semi-open
+// files (no pawns / no friendly pawns). Cheap, time-control-robust positional
+// bonuses; flat across game phase.
+const int BISHOP_PAIR = 30, ROOK_OPEN = 20, ROOK_SEMI = 10;
+
+int positional_bonuses(const board& b, color c) {
+    const bitboard own = b.piece_of_color[c];
+    int s = 0;
+    if (num_squares(b.piece_of_type[BISHOP] & own) >= 2) s += BISHOP_PAIR;
+    const bitboard own_pawns = b.piece_of_type[PAWN] & own;
+    const bitboard all_pawns = b.piece_of_type[PAWN];
+    bitboard rooks = b.piece_of_type[ROOK] & own;
+    while (rooks) {
+        const int f = get_file(pop_lsb(&rooks));
+        if (!(all_pawns & file[f])) s += ROOK_OPEN;          // open file
+        else if (!(own_pawns & file[f])) s += ROOK_SEMI;     // semi-open (only enemy pawns)
+    }
+    return s;
+}
+
 }  // namespace
 
 int static_evaluator::eval(const board& b) {
@@ -201,6 +221,9 @@ int static_evaluator::eval(const board& b) {
         const int mob = mobility(b, c);
         mg[c] += mob;
         eg[c] += mob;
+        const int pb = positional_bonuses(b, c);
+        mg[c] += pb;
+        eg[c] += pb;
     }
 
     if (phase > PHASE_MAX) phase = PHASE_MAX;   // early promotions can exceed it
