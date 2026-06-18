@@ -87,22 +87,31 @@ static double sigmoid(int eval_cp, double K) {
     return 1.0 / (1.0 + std::pow(10.0, -K * eval_cp / 400.0));
 }
 
-// Per-position target: blend of the game outcome (ground-truth anchor, noisy)
-// and the search score mapped through the sigmoid (low variance, but biased
-// toward the eval's own shallow search). lambda=1 -> pure outcome (classic
-// Texel); lambda=0 -> pure eval label; lambda~0.5 -> blend.
-static double target_of(const sample& s, double K, double lambda) {
-    return lambda * s.result + (1.0 - lambda) * sigmoid(s.eval_cp, K);
+// Option 1 (terminal grounding): a search score above this magnitude is a PROVEN
+// mate (engine MATE=32000), i.e. an exact terminal value, not an estimate.
+const int MATE_LABEL = 31900;
+double mate_weight = 1.0;        // >1 weights those certain labels more (set from argv)
+
+// Per-position {target, weight}. Mate-scored positions are ground truth: exact
+// 1/0 target, optionally up-weighted. Others: blend of the game outcome
+// (ground-truth anchor, noisy) and the search score through the sigmoid (low
+// variance, biased). lambda=1 -> pure outcome (Texel); lambda=0 -> pure eval.
+static std::pair<double, double> target_weight(const sample& s, double K, double lambda) {
+    if (s.eval_cp >  MATE_LABEL) return {1.0, mate_weight};   // White has a forced mate
+    if (s.eval_cp < -MATE_LABEL) return {0.0, mate_weight};   // White is getting mated
+    return {lambda * s.result + (1.0 - lambda) * sigmoid(s.eval_cp, K), 1.0};
 }
 
 static double mse(const std::vector<sample>& data, double K, double lambda) {
     static_evaluator ev;
-    double e = 0;
+    double e = 0, wsum = 0;
     for (const auto& s : data) {
-        const double diff = target_of(s, K, lambda) - sigmoid(ev.eval(s.b), K);
-        e += diff * diff;
+        const auto tw = target_weight(s, K, lambda);
+        const double diff = tw.first - sigmoid(ev.eval(s.b), K);
+        e += tw.second * diff * diff;
+        wsum += tw.second;
     }
-    return e / data.size();
+    return e / wsum;
 }
 
 // Fit K against the ground-truth outcome (lambda=1) so the cp->win-prob scale is
@@ -120,8 +129,9 @@ int main(int argc, char** argv) {
     chess::core::init();
     const std::string file = argc > 1 ? argv[1] : "eval_tune_data.txt";
     const double lambda    = argc > 2 ? std::stod(argv[2]) : 0.5;   // outcome weight
-    const int n_games      = argc > 3 ? std::stoi(argv[3]) : 1500;
-    const int depth        = argc > 4 ? std::stoi(argv[4]) : 4;
+    mate_weight            = argc > 3 ? std::stod(argv[3]) : 1.0;   // option 1: weight on mate labels
+    const int n_games      = argc > 4 ? std::stoi(argv[4]) : 1500;
+    const int depth        = argc > 5 ? std::stoi(argv[5]) : 4;
 
     std::vector<sample> data;
     std::ifstream in(file);
@@ -147,7 +157,7 @@ int main(int argc, char** argv) {
 
     const double K = fit_K(data);
     std::cout << "positions=" << data.size() << "  K=" << K << "  lambda=" << lambda
-              << "  initial E=" << mse(data, K, lambda) << "\n";
+              << "  mate_weight=" << mate_weight << "  initial E=" << mse(data, K, lambda) << "\n";
 
     std::vector<int*> params = {
         &eval_w.material[1], &eval_w.material[2], &eval_w.material[3], &eval_w.material[4],
