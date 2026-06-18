@@ -34,6 +34,10 @@ ARB=${ARBITER:-$HERE/../../chess-arbiter/build/src/arbiter/chessarbiter}
 [ -x "$A" ] && [ -x "$B" ] || { echo "engine binaries must be executable" >&2; exit 1; }
 RES=$(mktemp -d)
 trap 'rm -rf "$RES"' EXIT
+# Per-game wall-clock cap, scaled to the time control (a long game is ~200 plies
+# at MT ms each). A fixed cap silently truncates slow games and scores them as
+# non-wins -- which corrupts the result -- so scale it generously.
+GTO=$(( 220 * MT / 1000 + 60 ))
 
 openings=(
 "e2e4 e7e5" "e2e4 c7c5" "e2e4 e7e6" "e2e4 c7c6" "e2e4 d7d6" "e2e4 g7g6"
@@ -45,7 +49,7 @@ openings=(
 play_game() {   # id  side(A|B)  opening
   local id="$1" side="$2" op="$3" we be
   if [ "$side" = A ]; then we="$A"; be="$B"; else we="$B"; be="$A"; fi
-  timeout 120 "$ARB" --white-exec "$we" --black-exec "$be" \
+  timeout "$GTO" "$ARB" --white-exec "$we" --black-exec "$be" \
     --white-move-time "$MT" --black-move-time "$MT" \
     --initial-pos "startpos moves $op" --output "$RES/g$id.pgn" >/dev/null 2>&1
   echo "$side $(grep -oE '1-0|0-1|1/2-1/2' "$RES/g$id.pgn" 2>/dev/null | tail -1)" > "$RES/r$id"
@@ -65,17 +69,20 @@ done
 wait
 elapsed=$((SECONDS - start))
 
-w=0; d=0; l=0; n=0   # from A's perspective
+w=0; d=0; l=0; nores=0   # from A's perspective
 for rf in "$RES"/r*; do
-  read -r side res < "$rf"; n=$((n + 1))
+  read -r side res < "$rf"
+  if [ -z "$res" ]; then nores=$((nores + 1)); continue; fi   # timeout / crash -> exclude
   if [ "$side" = A ]; then
     case "$res" in "1-0") w=$((w+1));; "0-1") l=$((l+1));; "1/2-1/2") d=$((d+1));; esac
   else
     case "$res" in "1-0") l=$((l+1));; "0-1") w=$((w+1));; "1/2-1/2") d=$((d+1));; esac
   fi
 done
-awk -v w=$w -v d=$d -v l=$l -v g=$n -v t=$elapsed -v mt=$MT -v j=$JOBS 'BEGIN{
+g=$((w + d + l))
+awk -v w=$w -v d=$d -v l=$l -v g=$g -v nr=$nores -v t=$elapsed -v mt=$MT -v j=$JOBS 'BEGIN{
   s = w + d/2;
-  printf "A vs B @ %dms, jobs=%d, %d games in %ds\n", mt, j, g, t;
+  printf "A vs B @ %dms, jobs=%d, %d completed games in %ds\n", mt, j, g, t;
   printf "  A: +%d =%d -%d   score %.1f/%d = %.1f%%   (1 sigma ~%.1f%%)\n",
-         w, d, l, s, g, 100*s/g, 100*sqrt(0.25/g) }'
+         w, d, l, s, g, (g ? 100*s/g : 0), (g ? 100*sqrt(0.25/g) : 0);
+  if (nr > 0) printf "  WARNING: %d games had no result (timeout/crash) -- excluded\n", nr }'
