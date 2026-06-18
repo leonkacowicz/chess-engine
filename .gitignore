@@ -7,3 +7,6 @@ out
 
 # benchmark game cache (regenerable by selfplay_bench.py)
 bench/game.txt
+
+# Texel tuning dataset (regenerable by eval_tune)
+bench/eval_tune_data.txt

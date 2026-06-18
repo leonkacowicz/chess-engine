@@ -1,6 +1,7 @@
 file(GLOB SRCS *.cpp *.h)
 file(GLOB MAINCPP main.cpp)
-list(REMOVE_ITEM SRCS ${MAINCPP})
+file(GLOB TUNECPP eval_tune.cpp)
+list(REMOVE_ITEM SRCS ${MAINCPP} ${TUNECPP})
 add_library(engine STATIC ${SRCS})
 target_include_directories(engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(engine libchess-core)
@@ -9,3 +10,6 @@ target_link_libraries(engine Threads::Threads)
 
 add_executable(chessengine main.cpp)
 target_link_libraries(chessengine engine)
+
+add_executable(eval_tune eval_tune.cpp)
+target_link_libraries(eval_tune engine)
