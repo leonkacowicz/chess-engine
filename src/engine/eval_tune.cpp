@@ -27,7 +27,10 @@
 
 using namespace chess::core;
 
-struct sample { board b; double result; };   // result = White's game outcome (1 / 0.5 / 0)
+// result = White's game outcome (1 / 0.5 / 0); eval_cp = the move-selection
+// search score at this position, White POV (a low-variance per-position label
+// that, unlike the outcome, isn't poisoned by a later blunder).
+struct sample { board b; double result; int eval_cp; };
 
 static std::vector<sample> selfplay_dataset(int n_games, int depth, uint64_t seed) {
     std::vector<sample> data;
@@ -50,7 +53,7 @@ static std::vector<sample> selfplay_dataset(int n_games, int depth, uint64_t see
         }
         if (aborted) continue;
 
-        std::vector<board> positions;
+        std::vector<std::pair<board, int>> positions;   // (position, White-POV search score)
         double result = 0.5;
         int ply = 0;
         const int MAXPLY = 240;
@@ -63,13 +66,17 @@ static std::vector<sample> selfplay_dataset(int n_games, int depth, uint64_t see
             }
             if (g.is_draw_by_50move() || g.is_draw_by_3foldrep() || g.is_draw_by_insufficient_material()) break;
             if (ply >= MAXPLY) break;                  // unresolved -> draw label
-            if (!cur.under_check()) positions.push_back(cur);   // quiet-ish only
-            move m = e.search_iterate(g).first;
+            auto sr = e.search_iterate(g);             // (best move, score from side-to-move POV)
+            move m = sr.first;
             if (m == null_move) break;
+            if (!cur.under_check()) {                  // quiet-ish only
+                const int wcp = (cur.side_to_play == WHITE) ? sr.second : -sr.second;
+                positions.push_back({cur, wcp});
+            }
             g.do_move(m);
             ply++;
         }
-        for (auto& p : positions) data.push_back({p, result});
+        for (auto& pr : positions) data.push_back({pr.first, result, pr.second});
         if ((gi + 1) % 100 == 0) std::cerr << "  " << (gi + 1) << " games, " << data.size() << " positions\n";
     }
     std::cout.rdbuf(old_cout);   // restore before devnull is destroyed
@@ -80,20 +87,30 @@ static double sigmoid(int eval_cp, double K) {
     return 1.0 / (1.0 + std::pow(10.0, -K * eval_cp / 400.0));
 }
 
-static double mse(const std::vector<sample>& data, double K) {
+// Per-position target: blend of the game outcome (ground-truth anchor, noisy)
+// and the search score mapped through the sigmoid (low variance, but biased
+// toward the eval's own shallow search). lambda=1 -> pure outcome (classic
+// Texel); lambda=0 -> pure eval label; lambda~0.5 -> blend.
+static double target_of(const sample& s, double K, double lambda) {
+    return lambda * s.result + (1.0 - lambda) * sigmoid(s.eval_cp, K);
+}
+
+static double mse(const std::vector<sample>& data, double K, double lambda) {
     static_evaluator ev;
     double e = 0;
     for (const auto& s : data) {
-        const double diff = s.result - sigmoid(ev.eval(s.b), K);
+        const double diff = target_of(s, K, lambda) - sigmoid(ev.eval(s.b), K);
         e += diff * diff;
     }
     return e / data.size();
 }
 
+// Fit K against the ground-truth outcome (lambda=1) so the cp->win-prob scale is
+// anchored to reality, then reuse that K for the blended target.
 static double fit_K(const std::vector<sample>& data) {
-    double bestK = 1.0, bestE = mse(data, 1.0);
+    double bestK = 1.0, bestE = mse(data, 1.0, 1.0);
     for (double K = 0.40; K <= 2.0; K += 0.02) {
-        double e = mse(data, K);
+        double e = mse(data, K, 1.0);
         if (e < bestE) { bestE = e; bestK = K; }
     }
     return bestK;
@@ -102,8 +119,9 @@ static double fit_K(const std::vector<sample>& data) {
 int main(int argc, char** argv) {
     chess::core::init();
     const std::string file = argc > 1 ? argv[1] : "eval_tune_data.txt";
-    const int n_games = argc > 2 ? std::stoi(argv[2]) : 1500;
-    const int depth   = argc > 3 ? std::stoi(argv[3]) : 4;
+    const double lambda    = argc > 2 ? std::stod(argv[2]) : 0.5;   // outcome weight
+    const int n_games      = argc > 3 ? std::stoi(argv[3]) : 1500;
+    const int depth        = argc > 4 ? std::stoi(argv[4]) : 4;
 
     std::vector<sample> data;
     std::ifstream in(file);
@@ -111,21 +129,25 @@ int main(int argc, char** argv) {
         std::string line;
         while (std::getline(in, line)) {
             if (line.empty()) continue;
-            auto sc = line.rfind(';');
-            data.push_back({fen::board_from_fen(line.substr(0, sc)), std::stod(line.substr(sc + 1))});
+            const auto p1 = line.find(';');                  // end of FEN
+            const auto p2 = line.find(';', p1 + 1);          // end of result
+            data.push_back({fen::board_from_fen(line.substr(0, p1)),
+                            std::stod(line.substr(p1 + 1, p2 - p1 - 1)),
+                            std::stoi(line.substr(p2 + 1))});
         }
         std::cerr << "loaded " << data.size() << " positions from " << file << "\n";
     } else {
         std::cerr << "generating self-play dataset (" << n_games << " games, depth " << depth << ")...\n";
         data = selfplay_dataset(n_games, depth, 0x9e3779b97f4a7c15ULL);
         std::ofstream out(file);
-        for (auto& s : data) out << fen::to_string(s.b, 1) << ";" << s.result << "\n";
+        for (auto& s : data) out << fen::to_string(s.b, 1) << ";" << s.result << ";" << s.eval_cp << "\n";
         std::cerr << "wrote " << data.size() << " positions to " << file << "\n";
     }
     if (data.empty()) { std::cerr << "no data\n"; return 1; }
 
     const double K = fit_K(data);
-    std::cout << "positions=" << data.size() << "  K=" << K << "  initial E=" << mse(data, K) << "\n";
+    std::cout << "positions=" << data.size() << "  K=" << K << "  lambda=" << lambda
+              << "  initial E=" << mse(data, K, lambda) << "\n";
 
     std::vector<int*> params = {
         &eval_w.material[1], &eval_w.material[2], &eval_w.material[3], &eval_w.material[4],
@@ -135,17 +157,17 @@ int main(int argc, char** argv) {
         &eval_w.passed_eg[2], &eval_w.passed_eg[3], &eval_w.passed_eg[4], &eval_w.passed_eg[5], &eval_w.passed_eg[6],
         &eval_w.bishop_pair, &eval_w.rook_open, &eval_w.rook_semi,
     };
-    double best = mse(data, K);
+    double best = mse(data, K, lambda);
     for (int step : {16, 8, 4, 2, 1}) {
         bool improved = true;
         while (improved) {
             improved = false;
             for (int* p : params) {
                 *p += step;
-                double e = mse(data, K);
+                double e = mse(data, K, lambda);
                 if (e < best) { best = e; improved = true; continue; }
                 *p -= 2 * step;
-                e = mse(data, K);
+                e = mse(data, K, lambda);
                 if (e < best) { best = e; improved = true; continue; }
                 *p += step;   // revert
             }
