@@ -3,6 +3,7 @@
 //
 
 #include <chess/engine/static_evaluator.h>
+#include <chess/magic_bitboard.h>
 
 using namespace chess::core;
 
@@ -134,6 +135,33 @@ void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
     eg_out = eg;
 }
 
+// Mobility: per-piece count of reachable squares (sliders see through to current
+// occupancy; own pieces excluded), weighted by piece type. Rewards active pieces
+// and penalizes cramped ones. Uses magic-bitboard attacks, so it has a real
+// per-eval cost.
+const int MOB_N = 3, MOB_B = 3, MOB_R = 2, MOB_Q = 1;
+
+int mobility(const board& b, color c) {
+    const bitboard own = b.piece_of_color[c];
+    const bitboard occ = b.piece_of_color[WHITE] | b.piece_of_color[BLACK];
+    const bitboard not_own = ~own;
+    int m = 0;
+    bitboard bb;
+
+    bb = b.piece_of_type[KNIGHT] & own;
+    while (bb) { square sq = pop_lsb(&bb); m += MOB_N * num_squares(knight_attacks(sq) & not_own); }
+    bb = b.piece_of_type[BISHOP] & own;
+    while (bb) { square sq = pop_lsb(&bb); m += MOB_B * num_squares(attacks_from_bishop(sq, occ) & not_own); }
+    bb = b.piece_of_type[ROOK] & own;
+    while (bb) { square sq = pop_lsb(&bb); m += MOB_R * num_squares(attacks_from_rook(sq, occ) & not_own); }
+    bb = b.piece_of_type[QUEEN] & own;
+    while (bb) {
+        square sq = pop_lsb(&bb);
+        m += MOB_Q * num_squares((attacks_from_rook(sq, occ) | attacks_from_bishop(sq, occ)) & not_own);
+    }
+    return m;
+}
+
 }  // namespace
 
 int static_evaluator::eval(const board& b) {
@@ -170,6 +198,9 @@ int static_evaluator::eval(const board& b) {
         pawn_structure(b, c, psm, pse);
         mg[c] += psm;
         eg[c] += pse;
+        const int mob = mobility(b, c);
+        mg[c] += mob;
+        eg[c] += mob;
     }
 
     if (phase > PHASE_MAX) phase = PHASE_MAX;   // early promotions can exceed it
