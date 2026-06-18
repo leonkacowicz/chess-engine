@@ -14,10 +14,20 @@ using namespace chess::core;
 //
 // Tables are written rank-8-first (index 0 = a8 ... 63 = h1), so a WHITE piece
 // on LERF square sq indexes table[sq ^ 56] and a BLACK piece indexes table[sq].
+// Tunable scalar weights (see static_evaluator.h); defaults = the hand-set
+// values each term shipped with. External linkage so the tuner can modify them.
+eval_params eval_w = {
+    .material = {100, 320, 330, 500, 900},
+    .mob      = {0, 3, 3, 2, 1},                  // P N B R Q
+    .doubled = 12, .isolated = 14,
+    .passed_mg = {0, 0, 5, 10, 20, 35, 60, 0},
+    .passed_eg = {0, 0, 10, 20, 40, 70, 120, 0},
+    .bishop_pair = 30, .rook_open = 20, .rook_semi = 10,
+};
+
 namespace {
 
-const int MATERIAL[5] = {100, 320, 330, 500, 900};   // P N B R Q (king has none)
-const int PHASE_W[5]  = {0, 1, 1, 2, 4};             // game-phase weight per piece
+const int PHASE_W[5]  = {0, 1, 1, 2, 4};             // game-phase weight per piece (fixed)
 const int PHASE_MAX   = 24;
 
 const int PST_PAWN[64] = {
@@ -95,13 +105,7 @@ const int KING_EG[64] = {
 
 // Pawn structure. Doubled and isolated pawns are flat penalties; passed pawns
 // are a bonus that grows with advancement and is weighted toward the endgame
-// (where a passed pawn's promotion threat dominates). Indexed by the pawn's
-// relative rank (how far it has advanced, 0..7; only 1..6 occur).
-const int DOUBLED = 12;
-const int ISOLATED = 14;
-const int PASSED_MG[8] = {0, 0, 5, 10, 20, 35, 60, 0};
-const int PASSED_EG[8] = {0, 0, 10, 20, 40, 70, 120, 0};
-
+// (where a passed pawn's promotion threat dominates). Weights in eval_w.
 void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
     const bitboard own = b.piece_of_type[PAWN] & b.piece_of_color[c];
     const bitboard enemy = b.piece_of_type[PAWN] & b.piece_of_color[opposite(c)];
@@ -109,10 +113,10 @@ void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
     int flat = 0;   // doubled + isolated, applied equally to mg and eg
     for (int f = 0; f < 8; f++) {
         const int cnt = num_squares(own & file[f]);
-        if (cnt >= 2) flat -= (cnt - 1) * DOUBLED;
+        if (cnt >= 2) flat -= (cnt - 1) * eval_w.doubled;
         if (cnt > 0) {
             const bitboard adj = (f > 0 ? file[f - 1] : 0) | (f < 7 ? file[f + 1] : 0);
-            if (!(own & adj)) flat -= cnt * ISOLATED;   // every pawn on this file is isolated
+            if (!(own & adj)) flat -= cnt * eval_w.isolated;   // every pawn on this file is isolated
         }
     }
 
@@ -127,8 +131,8 @@ void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
         if (c == WHITE) { ahead = ~bitboard(0) << (8 * (r + 1)); rel = r; }
         else            { ahead = (bitboard(1) << (8 * r)) - 1;   rel = 7 - r; }
         if (!(enemy & files & ahead)) {   // no enemy pawn can stop it -> passed
-            mg += PASSED_MG[rel];
-            eg += PASSED_EG[rel];
+            mg += eval_w.passed_mg[rel];
+            eg += eval_w.passed_eg[rel];
         }
     }
     mg_out = mg;
@@ -138,9 +142,7 @@ void pawn_structure(const board& b, color c, int& mg_out, int& eg_out) {
 // Mobility: per-piece count of reachable squares (sliders see through to current
 // occupancy; own pieces excluded), weighted by piece type. Rewards active pieces
 // and penalizes cramped ones. Uses magic-bitboard attacks, so it has a real
-// per-eval cost.
-const int MOB_N = 3, MOB_B = 3, MOB_R = 2, MOB_Q = 1;
-
+// per-eval cost. Weights in eval_w.mob[piece].
 int mobility(const board& b, color c) {
     const bitboard own = b.piece_of_color[c];
     const bitboard occ = b.piece_of_color[WHITE] | b.piece_of_color[BLACK];
@@ -149,35 +151,33 @@ int mobility(const board& b, color c) {
     bitboard bb;
 
     bb = b.piece_of_type[KNIGHT] & own;
-    while (bb) { square sq = pop_lsb(&bb); m += MOB_N * num_squares(knight_attacks(sq) & not_own); }
+    while (bb) { square sq = pop_lsb(&bb); m += eval_w.mob[KNIGHT] * num_squares(knight_attacks(sq) & not_own); }
     bb = b.piece_of_type[BISHOP] & own;
-    while (bb) { square sq = pop_lsb(&bb); m += MOB_B * num_squares(attacks_from_bishop(sq, occ) & not_own); }
+    while (bb) { square sq = pop_lsb(&bb); m += eval_w.mob[BISHOP] * num_squares(attacks_from_bishop(sq, occ) & not_own); }
     bb = b.piece_of_type[ROOK] & own;
-    while (bb) { square sq = pop_lsb(&bb); m += MOB_R * num_squares(attacks_from_rook(sq, occ) & not_own); }
+    while (bb) { square sq = pop_lsb(&bb); m += eval_w.mob[ROOK] * num_squares(attacks_from_rook(sq, occ) & not_own); }
     bb = b.piece_of_type[QUEEN] & own;
     while (bb) {
         square sq = pop_lsb(&bb);
-        m += MOB_Q * num_squares((attacks_from_rook(sq, occ) | attacks_from_bishop(sq, occ)) & not_own);
+        m += eval_w.mob[QUEEN] * num_squares((attacks_from_rook(sq, occ) | attacks_from_bishop(sq, occ)) & not_own);
     }
     return m;
 }
 
 // Bishop pair (controls both colour complexes) and rooks on open / semi-open
 // files (no pawns / no friendly pawns). Cheap, time-control-robust positional
-// bonuses; flat across game phase.
-const int BISHOP_PAIR = 30, ROOK_OPEN = 20, ROOK_SEMI = 10;
-
+// bonuses; flat across game phase. Weights in eval_w.
 int positional_bonuses(const board& b, color c) {
     const bitboard own = b.piece_of_color[c];
     int s = 0;
-    if (num_squares(b.piece_of_type[BISHOP] & own) >= 2) s += BISHOP_PAIR;
+    if (num_squares(b.piece_of_type[BISHOP] & own) >= 2) s += eval_w.bishop_pair;
     const bitboard own_pawns = b.piece_of_type[PAWN] & own;
     const bitboard all_pawns = b.piece_of_type[PAWN];
     bitboard rooks = b.piece_of_type[ROOK] & own;
     while (rooks) {
         const int f = get_file(pop_lsb(&rooks));
-        if (!(all_pawns & file[f])) s += ROOK_OPEN;          // open file
-        else if (!(own_pawns & file[f])) s += ROOK_SEMI;     // semi-open (only enemy pawns)
+        if (!(all_pawns & file[f])) s += eval_w.rook_open;          // open file
+        else if (!(own_pawns & file[f])) s += eval_w.rook_semi;     // semi-open (only enemy pawns)
     }
     return s;
 }
@@ -196,7 +196,7 @@ int static_evaluator::eval(const board& b) {
         const int idx = (c == WHITE) ? (int(get_square(i)) ^ 56) : int(get_square(i));
         for (int p = PAWN; p <= QUEEN; p++) {
             if (b.piece_of_type[p] & i) {
-                const int s = MATERIAL[p] + PST[p][idx];
+                const int s = eval_w.material[p] + PST[p][idx];
                 mg[c] += s;
                 eg[c] += s;
                 phase += PHASE_W[p];
